@@ -86,3 +86,43 @@ def view_navigation(func):
             self.ds.set_view_name(new_view)
             self.change_image_at_view()
     return wrapper
+
+# util.py 파일의 맨 마지막에 추가 (또는 적절한 위치에)
+
+from functools import wraps
+from PyQt5.QtWidgets import QMessageBox
+
+# scene_navigation_modified 데코레이터 추가
+def scene_navigation_modified(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if not hasattr(self, 'ds') or self.ds is None:
+            QMessageBox.warning(self, "경고", "데이터셋이 로드되지 않았습니다.")
+            return
+        func(self)
+        if hasattr(self, 'ds') and self.ds is not None:
+            self.ds.set_view_name(str(self.ds.base_view_idx)) # 씬 변경 시 기본 뷰로 리셋
+    return wrapper
+
+# view_navigation_modified 데코레이터 추가
+def view_navigation_modified(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if not hasattr(self, 'ds') or self.ds is None:
+            QMessageBox.warning(self, "경고", "데이터셋이 로드되지 않았습니다.")
+            return
+
+        view_names = self.ds.get_view_name_list()
+        if not view_names:
+            QMessageBox.warning(self, "경고", "현재 씬에 뷰가 없습니다.")
+            return
+            
+        current_view_name = self.ds.get_view_name()
+        try:
+            idx = view_names.index(current_view_name)
+        except ValueError:
+            QMessageBox.warning(self, "경고", f"현재 뷰 '{current_view_name}'를 찾을 수 없습니다.")
+            return
+            
+        func(self, view_names, idx, *args, **kwargs)
+    return wrapper
