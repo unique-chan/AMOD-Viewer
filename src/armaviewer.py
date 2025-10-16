@@ -24,6 +24,33 @@ from annotation_object import AnnotationObject # annotation_object.py가 필요�
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+from PyQt5.QtWidgets import QLineEdit
+
+class CustomLineEdit(QLineEdit):
+    # <<< 핵심 수정: __init__ 함수가 모든 인자를 받을 수 있도록 변경
+    def __init__(self, *args, **kwargs):
+        super(CustomLineEdit, self).__init__(*args, **kwargs)
+        # 위젯이 드래그 앤 드롭을 허용하도록 설정
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        # 드롭된 데이터에 URL(파일/폴더 경로)이 있는지 확인
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction() # 드롭을 허용하는 커서 모양으로 변경
+        else:
+            super(CustomLineEdit, self).dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        # 드롭된 데이터에서 URL 목록을 가져옴
+        urls = event.mimeData().urls()
+        if urls:
+            # 첫 번째 URL을 가져와서 'file:///' 부분을 제거하고 일반 경로로 변환
+            path = urls[0].toLocalFile()
+            # 변환된 경로를 입력창의 텍스트로 설정
+            self.setText(path)
+        else:
+            super(CustomLineEdit, self).dropEvent(event)
+
 class ArmaViewer(QWidget):
     def __init__(self):
         super().__init__(flags=Qt.Window)
@@ -89,7 +116,7 @@ class ArmaViewer(QWidget):
             self.image_widget.setFixedSize(self.image_pixmap.size())
 
         def init_lvl1_panel_widget():
-            self.set_input = QLineEdit(self, placeholderText='Set Path - ex) /home/user/Downloads/altis_sunny_6_20')
+            self.set_input = CustomLineEdit(self, placeholderText='Set Path - ex) /home/user/Downloads/new_amod_sample')
             self.set_select_btn = QPushButton('Open', self)
 
         def lvl1_panel_widget_setting():
@@ -478,6 +505,7 @@ class ArmaViewer(QWidget):
      
         self.render_refined_scene() # 화면 다시 그리기
         self.create_legend()
+    
     def db_parse(self):
         input_path = self.set_input.text().strip()
         if not os.path.isdir(input_path):
@@ -487,11 +515,14 @@ class ArmaViewer(QWidget):
         try:
             self.ds = MVS.MultiViewSet()
             self.ds.set_path_and_name(input_path)
+            
+            self.num_of_scene_lbl.setText(f'# of Scenes : {len(self.ds.get_scene_name_list())}')
+            
             self.ds.update_best_view_idx()
-            self.num_of_scene_lbl.setText(f'# of Scenes : {util.count_legit_folder(self.ds.get_set_path())}')
-            self.ds.preload_scene_data()
-            self.change_image_at_scene()
-            self.set_mode(0)
+            # <<< 핵심 수정: 삭제된 함수 대신, 새로 만든 마스터 함수를 호출합니다.
+            # self.ds.preload_scene_data() 와 self.set_mode(0)는 마스터 함수 안에서 처리됩니다.
+            self._master_change_scene_handler(0) # 첫 번째 씬(index 0)을 불러옵니다.
+
         except Exception as e:
             print(f"데이터셋 파싱 중 오류 발생: {e}")
             import traceback
@@ -803,24 +834,6 @@ class ArmaViewer(QWidget):
 
         return label, color_rgb
 
-    def change_image_at_scene(self):
-        if not hasattr(self, 'ds') or self.ds is None: return
-        self.checkbox_toggle()
-        was_edit_mode = self.edit_mode 
-        self.selected_object = None
-        self.create_multiview()
-        self.change_image_at_view()
-        self.change_indicator()
-        if self.old_obox_check.isChecked():
-           self.load_old_data_bbox_if_needed(True) # 체크되어 있으면 다시 로드
-        else:
-           self.load_old_data_bbox_if_needed(False) # 체크 안 되어 있으면 초기화
-        
-        if was_edit_mode:
-            self.set_mode(1) # 이전에 Edit 모드였다면 다시 Edit 모드로 설정
-        else:
-            self.set_mode(0) # 이전에 View 모드였다면 View 모드로 설정
-
     def change_image_at_view(self):
         if not hasattr(self, 'ds') or self.ds is None: return
         
@@ -832,32 +845,36 @@ class ArmaViewer(QWidget):
             self.selected_object.is_selected = False
         self.selected_object = None
         
-        
+        # <<< 핵심 수정: UI 동기화 로직을 더욱 강화하고 안정적으로 만듭니다.
         current_view_name = self.ds.get_view_name()
-        try:
-            if current_view_name.isdigit():
-                current_view_int = int(current_view_name)
-                if self.angle and current_view_int in self.angle:
-                    clicked_angle_id = self.angle.index(current_view_int)
-                    self.view_group.button(clicked_angle_id).setChecked(True)
-        except (ValueError, IndexError):
-            pass
-            
         self.view_box.setTitle(f'View : {current_view_name}')
+        
+        if hasattr(self, 'angle') and self.angle:
+            try:
+                current_view_int = int(current_view_name)
+                if current_view_int in self.angle:
+                    button_id_to_check = self.angle.index(current_view_int)
+                    
+                    # 다른 동작을 유발하지 않도록 신호를 잠시 끊고 UI를 업데이트
+                    self.view_group.blockSignals(True)
+                    self.view_group.button(button_id_to_check).setChecked(True)
+                    self.view_group.blockSignals(False)
+            except (ValueError, IndexError):
+                pass # 오류가 발생해도 프로그램이 멈추지 않도록 처리
+            
         self.change_image_info()
         self.create_legend()
         if self.old_obox_check.isChecked():
-            self.load_old_data_bbox_if_needed(True) # 체크되어 있으면 다시 로드
+            self.load_old_data_bbox_if_needed(True)
         else:
-            self.load_old_data_bbox_if_needed(False) # 체크 안 되어 있으면 초기화 (old_data_objects를 비움)
-        
+            self.load_old_data_bbox_if_needed(False)
         
         if was_edit_mode:
-            self.set_mode(1) # 이전에 Edit 모드였다면 다시 Edit 모드로 설정
+            self.set_mode(1)
         else:
-            self.set_mode(0) # 이전에 View 모드였다면 View 모드로 설정
+            self.set_mode(0)
         
-        if was_edit_mode and selected_object_id: # Edit 모드였고 이전에 선택된 ID가 있다면
+        if was_edit_mode and selected_object_id:
             found_object = None
             for obj in self.annotation_objects:
                 if obj.id == selected_object_id:
@@ -867,16 +884,14 @@ class ArmaViewer(QWidget):
             if found_object:
                 self.selected_object = found_object
                 self.selected_object.is_selected = True
-                self.set_transform_controls_enabled(True) # 다시 활성화
-                self.update_transform_display() # UI 업데이트 (ID 라벨, 변환 값 등)
+                self.set_transform_controls_enabled(True)
+                self.update_transform_display()
             else:
-                # 같은 ID의 객체를 새 View에서 찾지 못하면 선택 해제
                 self.selected_object = None
-                self.set_transform_controls_enabled(False) # 비활성화
-                self.update_transform_display() # UI 초기화
+                self.set_transform_controls_enabled(False)
+                self.update_transform_display()
         
         self.render_refined_scene()
-
     
 
     def change_res(self):
@@ -930,7 +945,7 @@ class ArmaViewer(QWidget):
 
         if self.old_obox_check.isChecked() and self.old_data_objects:
         # Old Data BBOX는 고정된 회색 (128,128,128)으로 표시
-            unique_legend_entries.add(('Old Data BBOX', (128, 128, 128))) # RGB 순서로 (R,G,B)
+            unique_legend_entries.add(('Old Oriented BBOX', (128, 128, 128))) # RGB 순서로 (R,G,B)
 
         # 레전드 항목 정렬 (레이블 텍스트 기준)
         sorted_legend_entries = sorted(list(unique_legend_entries), key=lambda x: x[0])
@@ -962,33 +977,41 @@ class ArmaViewer(QWidget):
             self.legend_widget.setItemWidget(item, legend_item_widget)
 
     def create_multiview(self):
+        # 레이아웃의 기존 위젯들을 모두 삭제
         for i in reversed(range(self.view_layout.count())):
-            self.view_layout.itemAt(i).widget().deleteLater()
+            widget_to_remove = self.view_layout.itemAt(i).widget()
+            if widget_to_remove is not None:
+                widget_to_remove.deleteLater()
         self.view_box.setLayout(self.view_layout)
         
-        if not hasattr(self, 'ds') or self.ds is None: return
+        if not hasattr(self, 'ds') or self.ds is None:
+            return
 
         try:
-            current_scene_path = self.ds.get_scene_path()
-            if not current_scene_path or not os.path.isdir(current_scene_path): self.angle = []
-            else: self.angle = sorted([int(d) for d in os.listdir(current_scene_path) if d.isdigit()])
+            view_names = self.ds.get_view_name_list()
+            self.angle = [int(v) for v in view_names]
         except Exception as e:
-            print(f"Error listing view angles: {e}"); self.angle = []
+            print(f"Error getting view list: {e}")
+            self.angle = []
 
-        if not self.angle: return
+        if not self.angle:
+            return
 
+        # 가져온 뷰 목록으로 라디오 버튼 UI 생성
         for idx, i in enumerate(self.angle):
-            lbl = QRadioButton(str(i)); self.view_layout.addWidget(lbl); self.view_group.addButton(lbl, idx)
+            lbl = QRadioButton(str(i))
+            self.view_layout.addWidget(lbl)
+            self.view_group.addButton(lbl, idx)
         
-        current_view_name = self.ds.get_view_name()
-        if current_view_name.isdigit():
-            try:
-                current_view_int = int(current_view_name)
-                if current_view_int in self.angle:
-                    clicked_angle_id = self.angle.index(current_view_int)
-                    self.view_group.button(clicked_angle_id).setChecked(True)
-            except ValueError: pass
+        # <<< 핵심 수정: 여기서 UI 선택 표시는 하지 않습니다. (역할 분리)
+        
+        # 버튼 클릭 시그널 연결 (기존 연결이 남아있을 수 있으므로 재연결)
+        try:
+            self.view_group.buttonClicked[int].disconnect()
+        except TypeError:
+            pass # 연결된 것이 없으면 그냥 넘어감
         self.view_group.buttonClicked[int].connect(self.goto_view)
+        
 
     def change_indicator(self):
         if not hasattr(self, 'ds') or self.ds is None: self.indicator.setText(f'{"|" * 45}'); return
@@ -1014,41 +1037,64 @@ class ArmaViewer(QWidget):
         self.lbl_img.setPixmap(self.pixmap)
 
     
-
+    # goto_scene 함수 교체
     def goto_scene(self):
         if not hasattr(self, 'ds') or self.ds is None: return
-        if not self.check_for_unsaved_changes(): return
         max_length = self.ds.get_max_name_length()
         scene_name = self.goto_input.text().strip().zfill(max_length)
-        if scene_name not in self.ds.get_scene_name_list(): self.goto_input.setText('Not Found'); return
-        
-        self.ds.set_scene_name(scene_name)
-        self.ds.preload_scene_data()
-        self.ds.set_view_name(str(self.ds.base_view_idx))
-        self.change_image_at_scene()
+        if scene_name in self.ds.get_scene_name_list():
+            new_idx = self.ds.get_scene_name_list().index(scene_name)
+            self._master_change_scene_handler(new_idx)
+        else:
+            self.goto_input.setText('Not Found')
 
-    def filter_non_supported_classes(self, anno_file):
-        if anno_file is None or anno_file.empty: return pd.DataFrame()
-        return anno_file[anno_file['main_class'].isin(self.supported_classes)].dropna(subset=['main_class', 'middle_class']).reset_index(drop=True)
-
+    # goto_prev_scene 함수 교체
     @util.scene_navigation_modified
     def goto_prev_scene(self):
-        if not self.check_for_unsaved_changes(): return
         new_idx = self.ds.get_scene_index() - 1
         if new_idx < 0: new_idx = len(self.ds.get_scene_name_list()) - 1
-        self.ds.set_scene_index(new_idx); self.ds.preload_scene_data(); self.change_image_at_scene()
+        self._master_change_scene_handler(new_idx)
 
+    # goto_next_scene 함수 교체
     @util.scene_navigation_modified
     def goto_next_scene(self):
-        if not self.check_for_unsaved_changes(): return
         new_idx = self.ds.get_scene_index() + 1
         if new_idx >= len(self.ds.get_scene_name_list()): new_idx = 0
-        self.ds.set_scene_index(new_idx); self.ds.preload_scene_data(); self.change_image_at_scene()
+        self._master_change_scene_handler(new_idx)
 
+    # goto_first_scene 함수 교체
     @util.scene_navigation_modified
     def goto_first_scene(self):
-        if not self.check_for_unsaved_changes(): return
-        self.ds.set_scene_index(0); self.ds.preload_scene_data(); self.change_image_at_scene()
+        self._master_change_scene_handler(0)
+
+    
+    def _master_change_scene_handler(self, new_scene_index: int):
+        """씬 전환과 UI 업데이트를 책임지는 단일 마스터 함수."""
+        if not self.check_for_unsaved_changes():
+            return
+
+        # 1. 상태 기억: 씬을 바꾸기 전, 현재 뷰와 모드 상태를 명확하게 기억합니다.
+        view_to_maintain = self.ds.get_view_name()
+        was_edit_mode = self.edit_mode
+
+        # 2. 데이터 변경: 데이터 모델의 씬을 변경하고 데이터를 미리 불러옵니다.
+        self.ds.set_scene_index(new_scene_index)
+        self.ds.preload_scene_data()
+
+        # 3. 뷰 상태 복원: 기억해 둔 뷰를 데이터 모델에 다시 설정합니다.
+        # (모든 씬에 같은 뷰가 존재하므로, 확인 절차 없이 바로 설정합니다)
+        self.ds.set_view_name(view_to_maintain)
+        
+        # 4. UI 전체 새로고침: 화면의 모든 요소를 새로운 데이터 상태에 맞춰 업데이트합니다.
+        self.create_multiview()      # 뷰 라디오 버튼 목록을 새로 생성
+        self.change_image_at_view()  # 이미지, 레전드 및 뷰 선택 표시(동그라미) 업데이트
+        self.change_indicator()      # 하단 진행률 표시줄 업데이트
+        
+        # 5. 모드 복원: 기억해 둔 모드(View/Edit)로 다시 설정합니다.
+        if was_edit_mode:
+            self.set_mode(1)
+        else:
+            self.set_mode(0)
 
     def goto_view(self, selected_id):
         if not hasattr(self, 'ds') or self.ds is None or not self.angle:
@@ -1113,57 +1159,77 @@ class ArmaViewer(QWidget):
         if file_name: self.pixmap.save(file_name, 'png')
 
     def save_modified_annotations(self):
-        modified_objects = [obj for obj in self.annotation_objects if obj.is_modified]
-        if not modified_objects: 
-            QMessageBox.information(self, "정보", "수정된 어노테이션이 없습니다."); 
+        # 저장할 대상이 있는지 먼저 확인 (수정된 객체가 없어도 저장 가능하도록)
+        if not self.annotation_objects:
+            QMessageBox.information(self, "정보", "저장할 어노테이션이 없습니다.");
             return
 
         original_csv_path = self.ds.get_current_refined_csv_path()
-        if not original_csv_path: 
-            QMessageBox.warning(self, "경고", "원본 어노테이션 파일 경로를 찾을 수 없습니다."); 
+        if not original_csv_path:
+            QMessageBox.warning(self, "경고", "어노테이션 파일 경로를 찾을 수 없습니다.");
             return
 
-        dir_name, file_stem = original_csv_path.parent, original_csv_path.stem
+        dir_name = original_csv_path.parent
+        file_stem = original_csv_path.stem.replace('_modified', '')
         new_filename = f"{file_stem}_modified.csv"
         save_path = dir_name / new_filename
 
         try:
-            preloaded_data = self.ds.get_preloaded_data_for_current_view()
-            if not preloaded_data or preloaded_data['csv'] is None: 
-                QMessageBox.warning(self, "경고", "저장할 원본 데이터가 없습니다."); 
-                return
-            
-            df_to_save = preloaded_data['csv'].copy()
-            
-            if 'id' in df_to_save.columns: 
-                df_to_save.set_index('id', inplace=True)
-            else: 
-                QMessageBox.warning(self, "경고", "CSV 파일에 'id' 컬럼이 없어 저장이 불가합니다."); 
-                return
+            # <<< --- 핵심 수정: 캐시 대신 현재 annotation_objects 리스트로 새 데이터를 만듭니다.
+            all_objects_data = []
+            for obj in self.annotation_objects:
+                # 각 객체의 원본 row 데이터를 복사하여 시작
+                new_row = obj.row_data.copy()
+                
+                # 현재 최종 좌표를 가져옴
+                points = obj.get_transformed_points()
+                points_flat = points.flatten()
+                
+                # 좌표 및 중심점 업데이트
+                new_row['x1'], new_row['y1'], new_row['x2'], new_row['y2'], \
+                new_row['x3'], new_row['y3'], new_row['x4'], new_row['y4'] = [int(round(p)) for p in points_flat]
+                
+                new_center = np.mean(points, axis=0)
+                new_row['cx'], new_row['cy'] = [int(round(c)) for c in new_center]
+                
+                all_objects_data.append(new_row)
 
-            for obj in modified_objects:
-                points = obj.get_transformed_points() # 이 좌표는 float 형태일 수 있습니다.
-                obj_id = obj.id
-                if obj_id in df_to_save.index:
-                    points_flat = points.flatten()
-                    
-                    # ★★★ 이 부분을 수정하여 정수 형태로 저장합니다. ★★★
-                    # 각 좌표를 int로 캐스팅하고, 반올림하여 가장 가까운 정수로 만듭니다.
-                    df_to_save.loc[obj_id, ['x1','y1','x2','y2','x3','y3','x4','y4']] = [int(round(p)) for p in points_flat]
-                    
-                    new_center = np.mean(points, axis=0)
-                    # ★★★ 중심 좌표도 정수 형태로 저장합니다. ★★★
-                    df_to_save.loc[obj_id, ['cx', 'cy']] = [int(round(c)) for c in new_center]
-                else: 
-                    print(f"경고: DataFrame에서 ID '{obj_id}'를 찾을 수 없어 업데이트를 건너뜁니다.")
+            # 모든 객체의 최신 데이터로 새로운 DataFrame 생성
+            if not all_objects_data:
+                 QMessageBox.warning(self, "경고", "저장할 데이터가 없습니다.");
+                 return
             
-            df_to_save.reset_index(inplace=True)
+            df_to_save = pd.DataFrame(all_objects_data)
+            # --- 여기까지 ---
+
+            # 원본 CSV에 있던 컬럼 순서를 최대한 유지
+            preloaded_csv = self.ds.get_preloaded_data_for_current_view()['csv']
+            if preloaded_csv is not None:
+                original_columns = preloaded_csv.columns
+                # 새 DataFrame에 있는 컬럼만 사용하여 순서 맞춤
+                ordered_columns = [col for col in original_columns if col in df_to_save.columns]
+                df_to_save = df_to_save[ordered_columns]
+
             df_to_save.to_csv(save_path, index=False)
-            QMessageBox.information(self, "성공", f"수정된 어노테이션 {len(modified_objects)}개가 다음 파일로 저장되었습니다:\n{save_path}")
+            
+            # 메모리 캐시도 최신 DataFrame으로 업데이트
+            current_view_name = self.ds.get_view_name()
+            if current_view_name in self.ds.preloaded_scene_data:
+                self.ds.preloaded_scene_data[current_view_name]['csv'] = df_to_save
+
+            # 모든 객체의 '수정됨' 상태를 해제
+            for obj in self.annotation_objects:
+                if obj.is_modified:
+                    obj.is_modified = False
+            self.render_refined_scene()
+
+            QMessageBox.information(self, "성공", f"수정된 어노테이션 {len(self.annotation_objects)}개가 다음 파일로 저장되었습니다:\n{save_path}")
 
         except Exception as e:
             QMessageBox.critical(self, "저장 오류", f"어노테이션 저장 중 오류가 발생했습니다:\n{e}")
-    
+            import traceback
+            traceback.print_exc()
+
     def create_report_dialog(self):
         if not hasattr(self, 'ds') or not self.ds.get_set_path(): QMessageBox.warning(self, "경고", "데이터셋이 로드되지 않았습니다."); return
         text, ok = QInputDialog.getMultiLineText(self, 'Report', "What's the issue?")
@@ -1205,8 +1271,69 @@ class ArmaViewer(QWidget):
             self.change_image_at_view()
 
     def keyPressEvent(self, e):
-        if e.key() in self.key_map:
+        # 1. Edit 모드이고 객체가 선택되었을 때만 작동하는 단축키 (최우선 순위)
+        if self.edit_mode and self.selected_object:
+            modifiers = QApplication.keyboardModifiers()
+            step_multiplier = 1.0
+            if modifiers == Qt.ShiftModifier:
+                step_multiplier = 10.0  # Shift: 10배 크게 조절
+            elif modifiers == Qt.ControlModifier:
+                step_multiplier = 0.1   # Ctrl: 10배 미세하게 조절
+
+            key = e.key()
+
+            # <<< 핵심 수정: WASD로 객체 이동, 방향키 기능은 완전히 삭제 >>>
+            if key == Qt.Key_W:
+                self.adjust_transform('ty', -self.transform_step * step_multiplier)
+                e.accept()
+                return
+            elif key == Qt.Key_S:
+                self.adjust_transform('ty', self.transform_step * step_multiplier)
+                e.accept()
+                return
+            elif key == Qt.Key_A:
+                self.adjust_transform('tx', -self.transform_step * step_multiplier)
+                e.accept()
+                return
+            elif key == Qt.Key_D:
+                self.adjust_transform('tx', self.transform_step * step_multiplier)
+                e.accept()
+                return
+            
+            # 객체 회전 (Q, E 키)
+            elif key == Qt.Key_Q:
+                self.adjust_transform('angle', -self.angle_step * step_multiplier)
+                e.accept()
+                return
+            elif key == Qt.Key_E:
+                self.adjust_transform('angle', self.angle_step * step_multiplier)
+                e.accept()
+                return
+
+            # 객체 크기 조절 (+, - 키)
+            elif key == Qt.Key_Plus or key == Qt.Key_Equal:
+                self.adjust_transform('sw', self.scale_step * step_multiplier)
+                self.adjust_transform('sh', self.scale_step * step_multiplier)
+                e.accept()
+                return
+            elif key == Qt.Key_Minus:
+                self.adjust_transform('sw', -self.scale_step * step_multiplier)
+                self.adjust_transform('sh', -self.scale_step * step_multiplier)
+                e.accept()
+                return
+
+        # 2. 전역 단축키 (위의 조건에 해당하지 않을 때만 실행)
+        # 저장 단축키 (Ctrl+S)
+        if e.key() == Qt.Key_S and e.modifiers() == Qt.ControlModifier:
+            self.save_modified_annotations()
+            e.accept()
+            return
+
+        # 네비게이션 단축키 (W, A, S, D) - 수정자 키가 눌리지 않았을 때만
+        if e.key() in self.key_map and e.modifiers() == Qt.NoModifier:
             self.key_map[e.key()]()
+            e.accept()
+            return
 
 if __name__ == '__main__':
     if os.path.basename(os.getcwd()) == 'src': os.chdir('..')
