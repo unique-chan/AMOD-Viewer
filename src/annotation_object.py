@@ -1,96 +1,114 @@
-# annotation_object.py
+# annotation_object.py (최종 수정: UI 시계 방향 = 양수 각도, 이미지도 시계 방향 회전)
 
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
-
-import numpy as np
-import pandas as pd
-import cv2 # cv2.pointPolygonTest 사용을 위해 추가
-from typing import Dict, Any, Optional
+import cv2
+from typing import Optional, Any
 
 class AnnotationObject:
     def __init__(self, row_data: pd.Series, parent_viewer: Optional[Any] = None):
-        # row_data (pandas Series)는 CSV의 한 행 데이터를 담고 있습니다.
         self.row_data = row_data
-        
-        # 'id' 컬럼이 있으면 사용하고, 없으면 새로운 고유 ID를 생성합니다.
-        self.id = row_data['id'] if 'id' in row_data else f"new_obj_{id(self)}"
-        
-        # 원본 8개 좌표 (x1, y1, ..., x4, y4)를 추출하여 NumPy 배열로 저장합니다.
-        # .get()을 사용하여 컬럼이 없을 경우 기본값 0.0을 사용합니다.
+        self.id = row_data.name 
+
         points_cols = ['x1', 'y1', 'x2', 'y2', 'x3', 'y3', 'x4', 'y4']
-        self.original_points = np.array([row_data.get(col, 0.0) for col in points_cols], dtype=np.float32).reshape(4, 2)
+        loaded_coords = np.array([row_data.get(col, 0.0) for col in points_cols], dtype=np.float32).reshape(4, 2)
+        
+        rect_info = cv2.minAreaRect(loaded_coords)
+        
+        self.original_center = np.array(rect_info[0], dtype=np.float32)
+        self.original_size = np.array(rect_info[1], dtype=np.float32) 
+        
+        # _initial_angle은 cv2.minAreaRect에서 반환된 객체 본연의 각도입니다.
+        # 이 각도는 일반적으로 [-90, 0) 범위이며, x축에서 시계 방향으로 측정될 때 음수 값을 가집니다.
+        # 우리는 이 각도를 cv2.boxPoints가 기대하는 방식으로 그대로 사용합니다.
+        self._initial_angle = rect_info[2]
 
-        # 객체의 선택 및 수정 상태를 나타내는 플래그
+        # `self.rotation_angle`은 사용자가 추가한 회전량으로, 초기값은 0으로 설정됩니다.
+        # UI에서 시계 방향을 양수로 간주하는 경우, 이 값도 시계 방향으로 증가합니다.
+        self.rotation_angle = 0.0 
+
+        self.original_points = cv2.boxPoints(rect_info).astype(np.float32)
+
+        self.parent_viewer = parent_viewer
         self.is_selected = False
-        self.is_modified = False
         
-        # 객체별 변환 상태를 초기화합니다.
-        # CSV 데이터에 'tx', 'ty', 'sw', 'sh', 'angle' 컬럼이 있다면 그 값을 사용하고,
-        # 없으면 기본값 (0.0, 1.0, 0.0)으로 초기화합니다.
         self.translation = np.array([row_data.get('tx', 0.0), row_data.get('ty', 0.0)], dtype=np.float32)
-        self.scale = np.array([row_data.get('sw', 1.0), row_data.get('sh', 1.0)], dtype=np.float32)
-        self.rotation_angle = float(row_data.get('angle', 0.0)) # 각도 (degree)
-
-        # 부모 뷰어 인스턴스를 저장합니다 (필요한 경우 사용).
-        self.parent_viewer = parent_viewer 
-
-    def get_transformed_points(self):
-        """현재 객체의 변환 상태를 반영하여 8개 좌표를 계산하여 반환합니다."""
-        tx, ty = self.translation[0], self.translation[1]
-        sw, sh = self.scale[0], self.scale[1]
-        angle_rad = np.deg2rad(self.rotation_angle) # 각도를 라디안으로 변환
-
-        # 1. 원본 좌표의 중심을 계산합니다.
-        center_x, center_y = np.mean(self.original_points, axis=0)
-        # 2. 중심을 (0,0)으로 이동합니다.
-        temp_points = self.original_points - np.array([center_x, center_y])
-
-        # 3. 스케일 변환 행렬을 적용합니다.
-        scale_matrix = np.array([[sw, 0], [0, sh]])
-        scaled_points = np.dot(temp_points, scale_matrix)
-
-        # 4. 회전 변환 행렬을 적용합니다.
-        rotation_matrix = np.array([
-            [np.cos(angle_rad), -np.sin(angle_rad)],
-            [np.sin(angle_rad), np.cos(angle_rad)]
-        ])
-        rotated_points = np.dot(scaled_points, rotation_matrix)
-
-        # 5. 다시 원래 중심으로 이동하고, 최종 이동(translate) 값을 적용합니다.
-        transformed_points = rotated_points + np.array([center_x + tx, center_y + ty])
+        self.scale = np.array([1.0, 1.0], dtype=np.float32)
         
-        # 변환된 좌표는 float 형태로 유지하고 반환합니다.
-        # int 변환은 그릴 때나 특정 연산에 필요할 때 수행하는 것이 좋습니다.
-        return transformed_points 
+        self.mark_as_modified()
+
+
+    def get_transformed_points(self) -> np.ndarray:
+        """
+        현재 객체의 변환 상태(이동, 스케일, 회전)를 적용한 4개의 코너 포인트를 반환합니다.
+        UI에서 시계 방향을 양수 각도로 간주하는 경우에 맞춰 각도를 조정합니다.
+        """
+        scaled_width = self.original_size[0] * self.scale[0]
+        scaled_height = self.original_size[1] * self.scale[1]
+        
+        final_center = self.original_center + self.translation
+
+        # ★★★ 핵심 수정: cv2.boxPoints에 전달할 각도 조정 (UI 시계 방향 = 양수) ★★★
+        # self._initial_angle: 객체 본연의 각도 (OpenCV 체계: 시계 방향으로 측정, 보통 음수 값)
+        # self.rotation_angle: UI에서 입력된 사용자 추가 회전량 (시계 방향 = 양수)
+        
+        # UI의 '시계 방향 양수 증가'가 실제 물체의 '시계 방향 회전'과 일치하려면,
+        # self.rotation_angle을 부호 변경 없이 _initial_angle에 더합니다.
+        # cv2.boxPoints의 angle은 일반적으로 시계 방향으로 양수 값을 더하면 시계 방향으로 회전합니다.
+        # (혹은 -90~0 범위에서 시계 방향으로 증가합니다.)
+        
+        # UI에서 시계 방향을 양수로 설정했다면, 이 값을 그대로 더하면 됩니다.
+        # 만약 여전히 반대 방향으로 회전한다면, `self.rotation_angle`에 -1을 곱해야 합니다.
+        
+        # 현재는 `UI 시계 방향 양수 = 이미지 시계 방향 회전`을 목표로 함.
+        # 만약 UI에서 시계방향 버튼 누를 때 `self.rotation_angle`이 양수로 증가한다면,
+        # cv2.boxPoints의 각도도 시계 방향으로 증가해야 합니다.
+        # cv2.minAreaRect가 반환하는 각도는 이미 시계 방향을 기준으로 정의되는 경향이 있으므로,
+        # UI의 시계 방향 양수 값(self.rotation_angle)을 그대로 더해주는 것이 맞습니다.
+        
+        # 만약 계속 반대로 회전한다면, cv2.boxPoints의 각도 정의가 일반적인 수학적 정의(CCW=양수)와 같다는 뜻이므로,
+        # self.rotation_angle에 -1을 곱해야 합니다.
+        
+        # 이 코드 블록은 `UI 시계 방향 양수 = 이미지 시계 방향 회전`을 가정하고 있습니다.
+        # (즉, UI에서 시계 방향 화살표를 누를 때 `self.rotation_angle`이 양수로 증가해야 합니다.)
+        angle_for_cv2 = self._initial_angle + self.rotation_angle
+        
+        transformed_rect = (
+            (final_center[0], final_center[1]), 
+            (scaled_width, scaled_height), 
+            angle_for_cv2 
+        )
+        
+        transformed_points = cv2.boxPoints(transformed_rect)
+        
+        return transformed_points.astype(np.float32)
 
     def reset_transform(self):
-        """이 객체의 변환 상태(이동, 스케일, 회전)를 초기값으로 리셋합니다."""
         self.translation = np.array([0.0, 0.0], dtype=np.float32)
         self.scale = np.array([1.0, 1.0], dtype=np.float32)
-        self.rotation_angle = 0.0
-        self.is_modified = False
+        self.rotation_angle = 0.0 
+        self.mark_as_modified()
 
     def mark_as_modified(self):
-        """객체가 수정되었음을 표시합니다."""
-        self.is_modified = True
+        is_t_modified = not np.allclose(self.translation, [0.0, 0.0], atol=1e-5)
+        is_s_modified = not np.allclose(self.scale, [1.0, 1.0], atol=1e-5)
+        is_r_modified = not np.isclose(self.rotation_angle, 0.0, atol=1e-5)
 
-    def check_selection(self, point):
-        """주어진 점(point)이 현재 변환된 BBOX 내부에 있는지 확인합니다."""
+        self.is_modified = is_t_modified or is_s_modified or is_r_modified
+
+    def check_selection(self, point: tuple) -> bool:
         transformed_points = self.get_transformed_points()
-        
-        # cv2.pointPolygonTest는 정수 좌표를 기대하므로 변환된 좌표를 int로 캐스팅합니다.
         polygon = transformed_points.astype(np.int32)
-        
-        # cv2.pointPolygonTest를 사용하여 점이 폴리곤 내부에 있는지 확인합니다.
-        # return 값은 내부에 있으면 양수, 외부에 있으면 음수, 선 위에 있으면 0입니다.
         result = cv2.pointPolygonTest(polygon, (int(point[0]), int(point[1])), False)
-        return result >= 0 # 내부에 있거나 선 위에 있으면 True
+        return result >= 0
         
     def apply_transform_to_original(self):
-        """현재 변환된 상태를 original_points에 적용하고 변환을 리셋합니다."""
-        # 현재 변환된 좌표를 새로운 원본 좌표로 설정합니다.
-        self.original_points = self.get_transformed_points().astype(np.float32) 
-        self.reset_transform() # 변환 상태는 초기화됩니다.
-        self.is_modified = False # 수정 완료 후 수정 상태를 해제합니다.
+        current_transformed_points = self.get_transformed_points().astype(np.float32)
+        self.original_points = current_transformed_points
+        
+        updated_rect_info = cv2.minAreaRect(self.original_points)
+        self.original_center = np.array(updated_rect_info[0], dtype=np.float32)
+        self.original_size = np.array(updated_rect_info[1], dtype=np.float32)
+        
+        self._initial_angle = updated_rect_info[2]
+        self.reset_transform()

@@ -193,6 +193,32 @@ class MultiViewSet:
     def get_preloaded_data_for_current_view(self) -> Optional[dict]:
         return self.preloaded_scene_data.get(self.get_view_name())
     
+    def get_view_name_list(self) -> List[str]:
+        """현재 씬의 뷰 이름 목록을 문자열 리스트로 반환합니다."""
+        current_scene_path = self.get_scene_path()
+        if not current_scene_path or not os.path.isdir(current_scene_path):
+            return []
+        
+        # 현재 씬 경로에서 숫자로 된 서브디렉토리를 찾아 뷰 이름으로 사용
+        view_dirs = sorted([
+            d for d in os.listdir(current_scene_path) 
+            if os.path.isdir(os.path.join(current_scene_path, d)) and d.isdigit()
+        ])
+        return view_dirs
+    
+    def get_view_name_list(self) -> List[str]:
+        """현재 씬의 뷰 이름 목록을 문자열 리스트로 반환합니다."""
+        current_scene_path = self.get_scene_path()
+        if not current_scene_path or not os.path.isdir(current_scene_path):
+            return []
+        
+        # 현재 씬 경로에서 숫자로 된 서브디렉토리를 찾아 뷰 이름으로 사용
+        view_dirs = sorted([
+            d for d in os.listdir(current_scene_path) 
+            if os.path.isdir(os.path.join(current_scene_path, d)) and d.isdigit()
+        ])
+        return view_dirs
+    
     def get_view_name_path_list(self):
         current_scene_path = self.get_scene_path()
         if not current_scene_path: return [], []

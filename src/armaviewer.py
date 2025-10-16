@@ -284,8 +284,8 @@ class ArmaViewer(QWidget):
             self.sw_down_btn.clicked.connect(lambda: self.adjust_transform('sw', -self.scale_step))
             self.sh_up_btn.clicked.connect(lambda: self.adjust_transform('sh', self.scale_step))
             self.sh_down_btn.clicked.connect(lambda: self.adjust_transform('sh', -self.scale_step))
-            self.rot_cw_btn.clicked.connect(lambda: self.adjust_transform('angle', -self.angle_step))
-            self.rot_ccw_btn.clicked.connect(lambda: self.adjust_transform('angle', self.angle_step))
+            self.rot_cw_btn.clicked.connect(lambda: self.adjust_transform('angle', self.angle_step))
+            self.rot_ccw_btn.clicked.connect(lambda: self.adjust_transform('angle', -self.angle_step))
             
             self.tx_edit.editingFinished.connect(lambda: self.apply_transform_from_text_edit('tx', self.tx_edit.text()))
             self.ty_edit.editingFinished.connect(lambda: self.apply_transform_from_text_edit('ty', self.ty_edit.text()))
@@ -387,6 +387,31 @@ class ArmaViewer(QWidget):
         self.lvl6.addWidget(self.extra, alignment=Qt.AlignCenter)
         self.lvl6.addSpacing(self.side_space)
 
+   
+    def check_for_unsaved_changes(self):
+        """수정된 어노테이션이 있는지 확인하고 사용자에게 저장 여부를 묻습니다."""
+        modified_objects = [obj for obj in self.annotation_objects if obj.is_modified]
+        if not modified_objects:
+            return True  # 변경 사항 없으면 계속 진행
+
+        msg_box = QMessageBox()
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setText("수정된 내용이 있습니다. 저장하시겠습니까?")
+        msg_box.setInformativeText("Yes: 저장 후 이동 | No: 저장하지 않고 이동 | Cancel: 이동 취소")
+        msg_box.setWindowTitle("저장 확인")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
+        msg_box.setDefaultButton(QMessageBox.Yes)
+        
+        reply = msg_box.exec_()
+
+        if reply == QMessageBox.Yes:
+            self.save_modified_annotations()
+            return True # 저장 후 계속 진행
+        elif reply == QMessageBox.No:
+            return True # 저장하지 않고 계속 진행
+        else:  # Cancel
+            return False # 진행 중단
+        
     def init_ui(self):
         vbox = QVBoxLayout()
         vbox.addSpacing(self.updown_space)
@@ -992,6 +1017,7 @@ class ArmaViewer(QWidget):
 
     def goto_scene(self):
         if not hasattr(self, 'ds') or self.ds is None: return
+        if not self.check_for_unsaved_changes(): return
         max_length = self.ds.get_max_name_length()
         scene_name = self.goto_input.text().strip().zfill(max_length)
         if scene_name not in self.ds.get_scene_name_list(): self.goto_input.setText('Not Found'); return
@@ -1007,36 +1033,77 @@ class ArmaViewer(QWidget):
 
     @util.scene_navigation_modified
     def goto_prev_scene(self):
+        if not self.check_for_unsaved_changes(): return
         new_idx = self.ds.get_scene_index() - 1
         if new_idx < 0: new_idx = len(self.ds.get_scene_name_list()) - 1
         self.ds.set_scene_index(new_idx); self.ds.preload_scene_data(); self.change_image_at_scene()
 
     @util.scene_navigation_modified
     def goto_next_scene(self):
+        if not self.check_for_unsaved_changes(): return
         new_idx = self.ds.get_scene_index() + 1
         if new_idx >= len(self.ds.get_scene_name_list()): new_idx = 0
         self.ds.set_scene_index(new_idx); self.ds.preload_scene_data(); self.change_image_at_scene()
 
     @util.scene_navigation_modified
     def goto_first_scene(self):
+        if not self.check_for_unsaved_changes(): return
         self.ds.set_scene_index(0); self.ds.preload_scene_data(); self.change_image_at_scene()
 
     def goto_view(self, selected_id):
-        if not hasattr(self, 'ds') or self.ds is None or not self.angle: return
-        if 0 <= selected_id < len(self.angle): self.ds.set_view_name(str(self.angle[selected_id])); self.change_image_at_view()
+        if not hasattr(self, 'ds') or self.ds is None or not self.angle:
+            return
+
+        # 이미 선택된 뷰를 다시 클릭한 경우 아무것도 하지 않음
+        new_view_name = str(self.angle[selected_id])
+        if self.ds.get_view_name() == new_view_name:
+            return
+
+        # 뷰를 변경하기 전, 저장되지 않은 변경사항이 있는지 확인
+        if not self.check_for_unsaved_changes():
+            # 사용자가 'Cancel'을 누르면, 클릭된 라디오 버튼을 이전 상태로 되돌립니다.
+            try:
+                current_view_name = self.ds.get_view_name()
+                current_view_int = int(current_view_name)
+                previous_button_id = self.angle.index(current_view_int)
+                
+                # 시그널을 잠시 비활성화하여 무한 루프 방지
+                self.view_group.blockSignals(True)
+                self.view_group.button(previous_button_id).setChecked(True)
+                self.view_group.blockSignals(False)
+            except (ValueError, IndexError):
+                pass # 이전 버튼을 찾지 못해도 오류 없이 넘어감
+            return
+
+        # 모든 확인이 끝나면 뷰를 변경
+        if 0 <= selected_id < len(self.angle):
+            self.ds.set_view_name(str(self.angle[selected_id]))
+            self.change_image_at_view()
 
     @util.view_navigation_modified
     def goto_prev_view(self, view_names, idx):
+        if not self.check_for_unsaved_changes(): return
         if idx > 0: self.ds.set_view_name(str(view_names[idx - 1])); self.change_image_at_view()
 
     @util.view_navigation_modified
     def goto_next_view(self, view_names, idx):
+        if not self.check_for_unsaved_changes(): return
         if idx < len(view_names) - 1: self.ds.set_view_name(str(view_names[idx + 1])); self.change_image_at_view()
 
     @util.view_navigation_modified
     def goto_base_view(self, view_names, idx):
         new_view_name = str(self.ds.base_view_idx)
-        if self.ds.get_view_name() != new_view_name: self.ds.set_view_name(new_view_name); self.change_image_at_view()
+        # 현재 뷰가 이미 베이스 뷰이면 아무것도 하지 않음
+        if self.ds.get_view_name() == new_view_name:
+            return
+
+        # 베이스 뷰로 이동하기 전에 저장 여부 확인
+        if not self.check_for_unsaved_changes():
+            return
+
+        # 모든 확인이 끝나면 베이스 뷰로 변경
+        self.ds.set_view_name(new_view_name)
+        self.change_image_at_view()
 
     def save_png(self):
         if not hasattr(self, 'ds') or self.pixmap.isNull(): QMessageBox.warning(self, "경고", "표시된 이미지가 없습니다."); return
